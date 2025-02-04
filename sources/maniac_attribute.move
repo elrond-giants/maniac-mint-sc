@@ -7,6 +7,8 @@ use sui::random::{Self, Random};
 use sui::table::{Self, Table};
 use sui::url::{Self, Url};
 
+const IMAGE_BASE_URL: vector<u8> = b"https://metadata.coinfever.app/api/attribute/?id=";
+
 // Errors
 const EInvalidArrayLength: u64 = 0;
 const ENotAdmin: u64 = 1;
@@ -71,10 +73,8 @@ fun init(otw: MANIAC_ATTRIBUTE, ctx: &mut TxContext) {
         b"CoinFever".to_string(),
     ];
 
-    // Claim the `Publisher` for the package!
     let publisher = package::claim(otw, ctx);
 
-    // Get a new `Display` object for the `Hero` type.
     let mut display = display::new_with_fields<ManiacAttributeNft>(
         &publisher,
         keys,
@@ -82,7 +82,6 @@ fun init(otw: MANIAC_ATTRIBUTE, ctx: &mut TxContext) {
         ctx,
     );
 
-    // Commit first version of `Display` to apply changes.
     display.update_version();
 
     transfer::public_transfer(publisher, ctx.sender());
@@ -122,13 +121,16 @@ fun init(otw: MANIAC_ATTRIBUTE, ctx: &mut TxContext) {
     transfer::share_object(attributeMapping);
 }
 
-public fun add_attribute(
-    control: &mut MintingControl,
+/*
+Add attributes for the initial minting of the Fever Maniac NFTs. Each attribute has a field type, field value, and probability.
+*/
+entry fun add_attribute(
+    control: &MintingControl,
     mapping: &mut AttributeMapping,
     mut field_type_arr: vector<vector<u8>>,
     mut field_value_arr: vector<vector<u8>>,
     mut probability_arr: vector<u64>,
-    ctx: &mut TxContext,
+    ctx: &TxContext,
 ) {
     let caller = ctx.sender();
     assert!(is_admin(control, caller), ENotAdmin);
@@ -180,6 +182,9 @@ public fun get_attribute(
     }
 }
 
+/*
+Get a random attribute index based on the probabilities provided.
+*/
 fun get_random_number(probabilities: &vector<u64>, random: &Random, ctx: &mut TxContext): u64 {
     // Calculate the total sum of the probabilities
     let mut total = 0;
@@ -207,6 +212,9 @@ fun get_random_number(probabilities: &vector<u64>, random: &Random, ctx: &mut Tx
     0
 }
 
+/*
+Get a random attribute for a given field type.
+*/
 fun get_random_attribute(
     mapping: &AttributeMapping,
     field_type: vector<u8>,
@@ -227,6 +235,9 @@ fun get_random_attribute(
     get_attribute(mapping, field_type, random_attribute_id)
 }
 
+/*
+Create an attribute NFT with the given field type and field value.
+*/
 fun create_attribute(
     field_type: vector<u8>,
     field_value: vector<u8>,
@@ -235,14 +246,14 @@ fun create_attribute(
     let mut fullName = field_value;
     fullName.append(b" Attribute");
 
-    let mut imageUrl = b"https://base-metadata-api-testnet.vercel.app/layers/";
-    imageUrl.append(field_type);
-    imageUrl.append(b"/");
-    imageUrl.append(field_value);
-    imageUrl.append(b".png");
+    let nftId = object::new(ctx);
+
+    let mut imageUrl = IMAGE_BASE_URL;
+    let objectIdString = nftId.to_address().to_string().as_bytes();
+    imageUrl.append(*objectIdString);
 
     ManiacAttributeNft {
-        id: object::new(ctx),
+        id: nftId,
         name: string::utf8(fullName),
         image_url: url::new_unsafe_from_bytes(imageUrl),
         field_type: string::utf8(field_type),
@@ -250,6 +261,9 @@ fun create_attribute(
     }
 }
 
+/*
+Create a random attribute NFT for the given field type. This function is used on the Fever Maniac mint to create random attributes for each field type.
+*/
 public(package) fun create_random_attribute(
     mapping: &AttributeMapping,
     field_type: vector<u8>,
@@ -259,4 +273,23 @@ public(package) fun create_random_attribute(
     let random_attribute = get_random_attribute(mapping, field_type, random, ctx);
 
     create_attribute(field_type, random_attribute, ctx)
+}
+
+entry fun giveaway(
+    control: &MintingControl,
+    field_type: vector<u8>,
+    field_value: vector<u8>,
+    mut address_list: vector<address>,
+    ctx: &mut TxContext,
+) {
+    let caller = ctx.sender();
+    assert!(is_admin(control, caller), ENotAdmin);
+
+    while (!address_list.is_empty()) {
+        let user = address_list.pop_back();
+        let nft = create_attribute(field_type, field_value, ctx);
+        transfer::public_transfer(nft, user);
+    };
+
+    address_list.destroy_empty();
 }

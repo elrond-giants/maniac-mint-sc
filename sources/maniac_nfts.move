@@ -1,5 +1,7 @@
 module maniac_nfts::maniac_nfts;
 
+use kiosk::kiosk_lock_rule;
+use kiosk::royalty_rule as kiosk_royalty_rule;
 use maniac_nfts::maniac_attribute::{
     ManiacAttributeNft,
     field_type,
@@ -12,22 +14,26 @@ use std::string;
 use sui::coin::{Self, Coin};
 use sui::display;
 use sui::dynamic_object_field as ofield;
+use sui::kiosk::{Self, Kiosk, KioskOwnerCap};
 use sui::package;
 use sui::random::Random;
 use sui::sui::SUI;
+use sui::transfer_policy::{Self, TransferPolicy, TransferPolicyCap};
 use sui::url::{Self, Url};
 
 // TODO: Change this before deploy to mainnet
 const MAX_SUPPLY: u64 = 100;
-const IMAGE_BASE_URL: vector<u8> =
-    b"https://base-metadata-api-testnet.vercel.app/api/image-sui/?id=";
+const IMAGE_BASE_URL: vector<u8> = b"https://metadata.coinfever.app/api/image/?id=";
 const NFT_BASE_NAME: vector<u8> = b"Fever Maniac #";
 const ONE_SUI: u64 = 1000000000;
+const ROYALTIES: u16 = 10_00; // 10%
+const MIN_ROYALTIES: u64 = ONE_SUI / 10; // 0.1 SUI
 
 // Errors
 const EInvalidQuantity: u64 = 0;
 const EMintTooMany: u64 = 1;
 const EInvalidPayment: u64 = 2;
+const ENotAdmin: u64 = 3;
 
 public struct Admin has store {
     admin_address: address,
@@ -40,6 +46,8 @@ public struct MintingControl has key, store {
     admin: Admin,
     price_wl: u64,
     price_public: u64,
+    transfer_policy: TransferPolicy<ManiacNft>,
+    transfer_policy_cap: TransferPolicyCap<ManiacNft>,
 }
 
 public struct MANIAC_NFTS has drop {}
@@ -63,6 +71,10 @@ fun is_admin(control: &MintingControl, caller: address): bool {
     control.admin.admin_address == caller
 }
 
+/*
+Initializes the NFT collection and sets up policies for transfer and kiosk usage.
+*/
+#[lint_allow(self_transfer, share_owned)]
 fun init(otw: MANIAC_NFTS, ctx: &mut TxContext) {
     let keys = vector[
         b"name".to_string(),
@@ -78,10 +90,8 @@ fun init(otw: MANIAC_NFTS, ctx: &mut TxContext) {
         b"CoinFever".to_string(),
     ];
 
-    // Claim the `Publisher` for the package!
     let publisher = package::claim(otw, ctx);
 
-    // Get a new `Display` object for the `Hero` type.
     let mut display = display::new_with_fields<ManiacNft>(
         &publisher,
         keys,
@@ -89,29 +99,61 @@ fun init(otw: MANIAC_NFTS, ctx: &mut TxContext) {
         ctx,
     );
 
-    // Commit first version of `Display` to apply changes.
     display.update_version();
 
-    transfer::public_transfer(publisher, ctx.sender());
-    transfer::public_transfer(display, ctx.sender());
+    let sender = ctx.sender();
+
+    let (mut policy, policy_cap) = transfer_policy::new<ManiacNft>(&publisher, ctx);
+
+    // Kiosk Royalties rule
+    kiosk_royalty_rule::add(&mut policy, &policy_cap, ROYALTIES, MIN_ROYALTIES);
+
+    // Kiosk Lock rule
+    kiosk_lock_rule::add(&mut policy, &policy_cap);
 
     let mintingControl = MintingControl {
         id: object::new(ctx),
-        admin: Admin { admin_address: ctx.sender() },
+        admin: Admin { admin_address: sender },
         counter: 0,
         paused: false, // TODO: Change this to true before deploy to mainnet
         price_wl: 1 * ONE_SUI,
         price_public: 2 * ONE_SUI,
+        transfer_policy: policy,
+        transfer_policy_cap: policy_cap, // TODO: Maybe transfer this to admin
     };
 
+    transfer::public_transfer(publisher, sender);
+    transfer::public_transfer(display, sender);
     transfer::share_object(mintingControl);
 }
 
-#[allow(lint(self_transfer))]
-fun mint_to_sender(
+/*
+Allows the admin to withdraw royalties from the transfer policy.
+*/
+entry fun withdraw_royalty(control: &mut MintingControl, ctx: &mut TxContext) {
+    let caller = ctx.sender();
+    assert!(is_admin(control, caller), ENotAdmin);
+
+    let coin = transfer_policy::withdraw(
+        &mut control.transfer_policy,
+        &control.transfer_policy_cap,
+        option::none(),
+        ctx,
+    );
+
+    transfer::public_transfer(coin, control.admin.admin_address);
+}
+
+/*
+Mints an NFT to a specific address with 5 random attribute NFTs. The body and attributes are separate collections. Body NFT is locked inside a kiosk.
+*/
+fun mint_to_address(
     control: &mut MintingControl,
     attributes_mapping: &AttributeMapping,
     random: &Random,
+    kiosk: &mut Kiosk,
+    kiosk_cap: &KioskOwnerCap,
+    sender: address,
     ctx: &mut TxContext,
 ) {
     let mut fullName = vector::empty();
@@ -138,8 +180,8 @@ fun mint_to_sender(
     };
 
     control.counter = control.counter + 1;
-    let sender = ctx.sender();
-    transfer::public_transfer(nft, sender);
+
+    kiosk::lock(kiosk, kiosk_cap, &control.transfer_policy, nft);
 
     let backgroundAttribute = create_random_attribute(
         attributes_mapping,
@@ -158,6 +200,9 @@ fun mint_to_sender(
     transfer::public_transfer(eyesAttribute, sender);
 }
 
+/*
+Public mint function with referral capability. 
+*/
 entry fun mint(
     control: &mut MintingControl,
     attributes_mapping: &AttributeMapping,
@@ -175,8 +220,11 @@ entry fun mint(
 
     let mut i = 0;
 
+    let sender = ctx.sender();
+    let (mut kiosk, kiosk_cap) = kiosk::new(ctx);
+
     while (i < quantity) {
-        mint_to_sender(control, attributes_mapping, random, ctx);
+        mint_to_address(control, attributes_mapping, random, &mut kiosk, &kiosk_cap, sender, ctx);
         i = i + 1;
     };
 
@@ -187,10 +235,16 @@ entry fun mint(
         transfer::public_transfer(referralCoin, referralAddress);
     };
 
-    transfer::public_transfer(coin, ctx.sender());
-    // transfer::public_transfer(coin, control.admin.admin_address);
+    // transfer::public_transfer(coin, ctx.sender());
+    transfer::public_transfer(coin, control.admin.admin_address);
+
+    transfer::public_share_object(kiosk);
+    transfer::public_transfer(kiosk_cap, sender);
 }
 
+/*
+Whitelist mint function.
+*/
 entry fun mint_wl(
     control: &mut MintingControl,
     attributes_mapping: &AttributeMapping,
@@ -207,18 +261,27 @@ entry fun mint_wl(
     assert!(coin.value() == quantity * control.price_wl, EInvalidPayment);
 
     let mut i = 0;
+    let sender = ctx.sender();
+    let (mut kiosk, kiosk_cap) = kiosk::new(ctx);
 
     while (i < quantity) {
-        mint_to_sender(control, attributes_mapping, random, ctx);
+        mint_to_address(control, attributes_mapping, random, &mut kiosk, &kiosk_cap, sender, ctx);
         i = i + 1;
     };
 
     transfer::public_transfer(coin, control.admin.admin_address);
+    transfer::public_share_object(kiosk);
+    transfer::public_transfer(kiosk_cap, sender);
 }
 
+/*
+Set or remove attributes from a Fever Maniac NFT. Attributes are stored inside dynamic object fields.
+*/
 #[allow(lint(self_transfer))]
 public fun set_attribute(
-    nft: &mut ManiacNft,
+    nft_id: ID,
+    kiosk: &mut Kiosk,
+    cap: &KioskOwnerCap,
     mut add_attributes: vector<ManiacAttributeNft>,
     mut remove_attributes: vector<vector<u8>>,
     ctx: &mut TxContext,
@@ -226,6 +289,8 @@ public fun set_attribute(
     assert!(add_attributes.length() <= 5, 1);
     assert!(remove_attributes.length() <= 5, 1);
     assert!(add_attributes.length() > 0 || remove_attributes.length() > 0, 1);
+
+    let nft = kiosk::borrow_mut<ManiacNft>(kiosk, cap, nft_id);
 
     let sender = ctx.sender();
 
@@ -271,4 +336,31 @@ public fun set_attribute(
 
     add_attributes.destroy_empty();
     remove_attributes.destroy_empty();
+}
+
+entry fun giveaway(
+    control: &mut MintingControl,
+    attributes_mapping: &AttributeMapping,
+    random: &Random,
+    mut address_list: vector<address>,
+    ctx: &mut TxContext,
+) {
+    let caller = ctx.sender();
+    assert!(is_admin(control, caller), ENotAdmin);
+
+    assert!(address_list.length() <= 50, EInvalidQuantity);
+
+    assert!(address_list.length() + control.counter <= MAX_SUPPLY, EMintTooMany);
+
+    while (!address_list.is_empty()) {
+        let user = address_list.pop_back();
+        let (mut kiosk, kiosk_cap) = kiosk::new(ctx);
+
+        mint_to_address(control, attributes_mapping, random, &mut kiosk, &kiosk_cap, user, ctx);
+
+        transfer::public_share_object(kiosk);
+        transfer::public_transfer(kiosk_cap, user);
+    };
+
+    address_list.destroy_empty();
 }
