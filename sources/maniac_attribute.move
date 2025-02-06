@@ -5,7 +5,7 @@ use sui::display;
 use sui::package;
 use sui::random::{Self, Random};
 use sui::table::{Self, Table};
-use sui::url::{Self, Url};
+use sui::vec_map::{Self, VecMap};
 
 const IMAGE_BASE_URL: vector<u8> = b"https://metadata.coinfever.app/api/attribute/?id=";
 
@@ -27,9 +27,10 @@ public struct MANIAC_ATTRIBUTE has drop {}
 public struct ManiacAttributeNft has key, store {
     id: UID,
     name: string::String,
-    image_url: Url,
+    image_url: string::String,
     field_type: string::String,
     field_value: string::String,
+    attributes: VecMap<string::String, string::String>,
 }
 
 public fun field_type(nft: &ManiacAttributeNft): &string::String {
@@ -252,12 +253,18 @@ fun create_attribute(
     let objectIdString = nftId.to_address().to_string().as_bytes();
     imageUrl.append(*objectIdString);
 
+    let mut attributes = vec_map::empty<string::String, string::String>();
+    attributes.insert(string::utf8(b"type"), string::utf8(b"Attribute"));
+    attributes.insert(string::utf8(b"attribute type"), string::utf8(field_type));
+    attributes.insert(string::utf8(b"attribute value"), string::utf8(field_value));
+
     ManiacAttributeNft {
         id: nftId,
         name: string::utf8(fullName),
-        image_url: url::new_unsafe_from_bytes(imageUrl),
+        image_url: string::utf8(imageUrl),
         field_type: string::utf8(field_type),
         field_value: string::utf8(field_value),
+        attributes,
     }
 }
 
