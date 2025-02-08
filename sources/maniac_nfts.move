@@ -2,7 +2,7 @@ module maniac_nfts::maniac_nfts;
 
 use kiosk::kiosk_lock_rule;
 use kiosk::royalty_rule as kiosk_royalty_rule;
-use maniac_nfts::maniac_attribute::{
+use maniac_attribute::maniac_attribute::{
     ManiacAttributeNft,
     field_type,
     field_value,
@@ -163,21 +163,21 @@ fun mint_to_address(
 
     kiosk::lock(kiosk, kiosk_cap, transfer_policy, nft);
 
-    let backgroundAttribute = create_random_attribute(
-        attributes_mapping,
-        b"background",
-        random,
-        ctx,
-    );
-    transfer::public_transfer(backgroundAttribute, sender);
-    let beardAttribute = create_random_attribute(attributes_mapping, b"beard", random, ctx);
-    transfer::public_transfer(beardAttribute, sender);
-    let bodyAttribute = create_random_attribute(attributes_mapping, b"body", random, ctx);
-    transfer::public_transfer(bodyAttribute, sender);
-    let hatAttribute = create_random_attribute(attributes_mapping, b"hat", random, ctx);
-    transfer::public_transfer(hatAttribute, sender);
-    let eyesAttribute = create_random_attribute(attributes_mapping, b"eyes", random, ctx);
-    transfer::public_transfer(eyesAttribute, sender);
+    // let backgroundAttribute = create_random_attribute(
+    //     attributes_mapping,
+    //     b"background",
+    //     random,
+    //     ctx,
+    // );
+    // transfer::public_transfer(backgroundAttribute, sender);
+    // let beardAttribute = create_random_attribute(attributes_mapping, b"beard", random, ctx);
+    // transfer::public_transfer(beardAttribute, sender);
+    // let bodyAttribute = create_random_attribute(attributes_mapping, b"body", random, ctx);
+    // transfer::public_transfer(bodyAttribute, sender);
+    // let hatAttribute = create_random_attribute(attributes_mapping, b"hat", random, ctx);
+    // transfer::public_transfer(hatAttribute, sender);
+    // let eyesAttribute = create_random_attribute(attributes_mapping, b"eyes", random, ctx);
+    // transfer::public_transfer(eyesAttribute, sender);
 }
 
 /*
@@ -236,7 +236,7 @@ entry fun mint_wl(
     control: &mut MintingControl,
     attributes_mapping: &AttributeMapping,
     random: &Random,
-    _wl: &mut WlNft,
+    _wl: &WlNft,
     coin: Coin<SUI>,
     quantity: u64,
     kiosk: &mut Kiosk,
@@ -337,39 +337,39 @@ public fun set_attribute(
     remove_attributes.destroy_empty();
 }
 
-entry fun giveaway(
-    control: &mut MintingControl,
-    attributes_mapping: &AttributeMapping,
-    random: &Random,
-    mut address_list: vector<address>,
-    transfer_policy: &TransferPolicy<ManiacNft>,
-    ctx: &mut TxContext,
-) {
-    let caller = ctx.sender();
-    assert!(is_admin(control, caller), ENotAdmin);
+// entry fun giveaway(
+//     control: &mut MintingControl,
+//     attributes_mapping: &AttributeMapping,
+//     random: &Random,
+//     mut address_list: vector<address>,
+//     transfer_policy: &TransferPolicy<ManiacNft>,
+//     ctx: &mut TxContext,
+// ) {
+//     let caller = ctx.sender();
+//     assert!(is_admin(control, caller), ENotAdmin);
 
-    assert!(address_list.length() <= 50, EInvalidQuantity);
+//     assert!(address_list.length() <= 50, EInvalidQuantity);
 
-    assert!(address_list.length() + control.counter <= MAX_SUPPLY, EMintTooMany);
+//     assert!(address_list.length() + control.counter <= MAX_SUPPLY, EMintTooMany);
 
-    while (!address_list.is_empty()) {
-        let user = address_list.pop_back();
-        let (mut kiosk, kiosk_cap) = kiosk::new(ctx);
+//     while (!address_list.is_empty()) {
+//         let user = address_list.pop_back();
+//         let (mut kiosk, kiosk_cap) = kiosk::new(ctx);
 
-        mint_to_address(
-            control,
-            attributes_mapping,
-            random,
-            &mut kiosk,
-            &kiosk_cap,
-            transfer_policy,
-            user,
-            ctx,
-        );
+//         mint_to_address(
+//             control,
+//             attributes_mapping,
+//             random,
+//             &mut kiosk,
+//             &kiosk_cap,
+//             transfer_policy,
+//             user,
+//             ctx,
+//         );
 
-        transfer::public_share_object(kiosk);
-        transfer::public_transfer(kiosk_cap, user);
-    };
+//         transfer::public_share_object(kiosk);
+//         transfer::public_transfer(kiosk_cap, user);
+//     };
 
-    address_list.destroy_empty();
-}
+//     address_list.destroy_empty();
+// }

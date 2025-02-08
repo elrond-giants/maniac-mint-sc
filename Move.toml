@@ -8,6 +8,7 @@ edition = "2024.beta" # edition = "legacy" to use legacy (pre-2024) Move
 Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "framework/mainnet" }
 Kiosk = { git = "https://github.com/MystenLabs/apps.git", subdir = "kiosk", rev = "main" }
 maniac_wl = { local = "../maniac_wl" }
+maniac_attribute = { local = "../maniac_attribute" }
 
 # For remote import, use the `{ git = "...", subdir = "...", rev = "..." }`.
 # Revision can be a branch, a tag, and a commit hash.
