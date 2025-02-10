@@ -10,30 +10,50 @@ use maniac_nfts::maniac_attribute::{
     AttributeMapping
 };
 use maniac_wl::maniac_wl::WlNft;
-use std::string;
-use sui::coin::{Self, Coin};
+use std::string::{Self, String};
+use sui::coin::Coin;
 use sui::display;
 use sui::dynamic_object_field as ofield;
 use sui::kiosk::{Self, Kiosk, KioskOwnerCap};
 use sui::package;
 use sui::random::Random;
 use sui::sui::SUI;
+use sui::table::{Self, Table};
 use sui::transfer_policy::{Self, TransferPolicy, TransferPolicyCap};
-use sui::url::{Self, Url};
+use sui::vec_map::{Self, VecMap};
 
-// TODO: Change this before deploy to mainnet
-const MAX_SUPPLY: u64 = 100;
-const IMAGE_BASE_URL: vector<u8> = b"https://metadata.coinfever.app/api/image/?id=";
-const NFT_BASE_NAME: vector<u8> = b"Fever Maniac #";
-const ONE_SUI: u64 = 1000000000;
-const ROYALTIES: u16 = 10_00; // 10%
-const MIN_ROYALTIES: u64 = ONE_SUI / 10; // 0.1 SUI
+// === Errors ===
 
-// Errors
 const EInvalidQuantity: u64 = 0;
 const EMintTooMany: u64 = 1;
 const EInvalidPayment: u64 = 2;
 const ENotAdmin: u64 = 3;
+const EInvalidMintingType: u64 = 4;
+const ENameAlreadyUsed: u64 = 5;
+
+// === Constants ===
+
+// TODO: Change this before deploy to mainnet
+const MAX_SUPPLY: u64 = 4444;
+const IMAGE_BASE_URL: vector<u8> = b"https://metadata.coinfever.app/api/image/?id=";
+const NFT_BASE_NAME: vector<u8> = b"Fever Maniac #";
+const WL_PRICE: u64 = 1;
+const PUBLIC_PRICE: u64 = 1;
+const ONE_SUI: u64 = 1000000000;
+const ROYALTIES: u16 = 7_00; // 10%
+const MIN_ROYALTIES: u64 = ONE_SUI / 10; // 0.1 SUI
+
+const MAX_MINT_WL: u64 = 6;
+const MAX_MINT_PUBLIC: u64 = 12;
+
+// === Structs ===
+
+public struct ManiacNft has key, store {
+    id: UID,
+    name: String,
+    image_url: String,
+    attributes: VecMap<String, String>,
+}
 
 public struct Admin has store {
     admin_address: address,
@@ -46,30 +66,17 @@ public struct MintingControl has key, store {
     admin: Admin,
     price_wl: u64,
     price_public: u64,
-    transfer_policy: TransferPolicy<ManiacNft>,
-    transfer_policy_cap: TransferPolicyCap<ManiacNft>,
+    minting_type: u8, // 0 = WL | 1 = Public
+    wl_address_counter: Table<address, u64>,
+    public_address_counter: Table<address, u64>,
+    used_names: VecMap<String, bool>,
 }
 
 public struct MANIAC_NFTS has drop {}
 
-public struct ManiacNftAttributes has store {
-    background: string::String,
-    body: string::String,
-    hat: string::String,
-    beard: string::String,
-    eyes: string::String,
-}
+// === Events ===
 
-public struct ManiacNft has key, store {
-    id: UID,
-    name: string::String,
-    image_url: Url,
-    attributes: ManiacNftAttributes,
-}
-
-fun is_admin(control: &MintingControl, caller: address): bool {
-    control.admin.admin_address == caller
-}
+// === Public Functions ===
 
 /*
 Initializes the NFT collection and sets up policies for transfer and kiosk usage.
@@ -116,88 +123,77 @@ fun init(otw: MANIAC_NFTS, ctx: &mut TxContext) {
         admin: Admin { admin_address: sender },
         counter: 0,
         paused: false, // TODO: Change this to true before deploy to mainnet
-        price_wl: 1 * ONE_SUI,
-        price_public: 2 * ONE_SUI,
-        transfer_policy: policy,
-        transfer_policy_cap: policy_cap, // TODO: Maybe transfer this to admin
+        price_wl: WL_PRICE * ONE_SUI,
+        price_public: PUBLIC_PRICE * ONE_SUI,
+        minting_type: 0,
+        wl_address_counter: table::new(ctx),
+        public_address_counter: table::new(ctx),
+        used_names: vec_map::empty<String, bool>(),
     };
 
     transfer::public_transfer(publisher, sender);
     transfer::public_transfer(display, sender);
     transfer::share_object(mintingControl);
+    transfer::public_share_object(policy);
+    transfer::public_transfer(policy_cap, sender);
+}
+
+/*
+Pause the minting (only callable by the admin)
+*/
+entry fun pause(control: &mut MintingControl, ctx: &TxContext) {
+    let caller = ctx.sender();
+    assert!(is_admin(control, caller), ENotAdmin);
+    control.paused = true;
+}
+
+/*
+Unpause the contract (only callable by the admin)
+*/
+entry fun unpause(control: &mut MintingControl, ctx: &TxContext) {
+    let caller = ctx.sender();
+    assert!(is_admin(control, caller), ENotAdmin);
+    control.paused = false;
+}
+
+/*
+Pause the minting (only callable by the admin)
+*/
+entry fun set_mint_type_wl(control: &mut MintingControl, ctx: &TxContext) {
+    let caller = ctx.sender();
+    assert!(is_admin(control, caller), ENotAdmin);
+    control.minting_type = 0;
+}
+
+/*
+Unpause the contract (only callable by the admin)
+*/
+entry fun set_mint_type_public(control: &mut MintingControl, ctx: &TxContext) {
+    let caller = ctx.sender();
+    assert!(is_admin(control, caller), ENotAdmin);
+    control.minting_type = 1;
 }
 
 /*
 Allows the admin to withdraw royalties from the transfer policy.
 */
-entry fun withdraw_royalty(control: &mut MintingControl, ctx: &mut TxContext) {
+entry fun withdraw_royalty(
+    control: &MintingControl,
+    transfer_policy: &mut TransferPolicy<ManiacNft>,
+    policy_cap: &TransferPolicyCap<ManiacNft>,
+    ctx: &mut TxContext,
+) {
     let caller = ctx.sender();
     assert!(is_admin(control, caller), ENotAdmin);
 
     let coin = transfer_policy::withdraw(
-        &mut control.transfer_policy,
-        &control.transfer_policy_cap,
+        transfer_policy,
+        policy_cap,
         option::none(),
         ctx,
     );
 
     transfer::public_transfer(coin, control.admin.admin_address);
-}
-
-/*
-Mints an NFT to a specific address with 5 random attribute NFTs. The body and attributes are separate collections. Body NFT is locked inside a kiosk.
-*/
-fun mint_to_address(
-    control: &mut MintingControl,
-    attributes_mapping: &AttributeMapping,
-    random: &Random,
-    kiosk: &mut Kiosk,
-    kiosk_cap: &KioskOwnerCap,
-    sender: address,
-    ctx: &mut TxContext,
-) {
-    let mut fullName = vector::empty();
-    fullName.append(NFT_BASE_NAME);
-    fullName.append(*control.counter.to_string().as_bytes());
-
-    let nftId = object::new(ctx);
-
-    let mut imageUrl = IMAGE_BASE_URL;
-    let objectIdString = nftId.to_address().to_string().as_bytes();
-    imageUrl.append(*objectIdString);
-
-    let nft = ManiacNft {
-        id: nftId,
-        name: string::utf8(fullName),
-        image_url: url::new_unsafe_from_bytes(imageUrl),
-        attributes: ManiacNftAttributes {
-            background: string::utf8(b"None"),
-            body: string::utf8(b"None"),
-            hat: string::utf8(b"None"),
-            beard: string::utf8(b"None"),
-            eyes: string::utf8(b"None"),
-        },
-    };
-
-    control.counter = control.counter + 1;
-
-    kiosk::lock(kiosk, kiosk_cap, &control.transfer_policy, nft);
-
-    let backgroundAttribute = create_random_attribute(
-        attributes_mapping,
-        b"background",
-        random,
-        ctx,
-    );
-    transfer::public_transfer(backgroundAttribute, sender);
-    let beardAttribute = create_random_attribute(attributes_mapping, b"beard", random, ctx);
-    transfer::public_transfer(beardAttribute, sender);
-    let bodyAttribute = create_random_attribute(attributes_mapping, b"body", random, ctx);
-    transfer::public_transfer(bodyAttribute, sender);
-    let hatAttribute = create_random_attribute(attributes_mapping, b"hat", random, ctx);
-    transfer::public_transfer(hatAttribute, sender);
-    let eyesAttribute = create_random_attribute(attributes_mapping, b"eyes", random, ctx);
-    transfer::public_transfer(eyesAttribute, sender);
 }
 
 /*
@@ -207,39 +203,48 @@ entry fun mint(
     control: &mut MintingControl,
     attributes_mapping: &AttributeMapping,
     random: &Random,
-    mut coin: Coin<SUI>,
+    coin: Coin<SUI>,
     quantity: u64,
-    referral: Option<address>,
+    kiosk: &mut Kiosk,
+    kiosk_cap: &KioskOwnerCap,
+    transfer_policy: &TransferPolicy<ManiacNft>,
     ctx: &mut TxContext,
 ) {
-    assert!(quantity > 0 && quantity <= 50, EInvalidQuantity);
+    assert!(control.minting_type == 1, EInvalidMintingType);
+
+    assert!(quantity > 0 && quantity <= MAX_MINT_PUBLIC, EInvalidQuantity);
 
     assert!(quantity + control.counter <= MAX_SUPPLY, EMintTooMany);
 
     assert!(coin.value() == quantity * control.price_public, EInvalidPayment);
 
+    let sender = ctx.sender();
+    if (control.public_address_counter.contains(sender)) {
+        let counter = *control.public_address_counter.borrow(sender);
+        assert!(counter + quantity <= MAX_MINT_PUBLIC, EMintTooMany);
+        control.public_address_counter.remove(sender);
+        control.public_address_counter.add(sender, counter + quantity);
+    } else {
+        control.public_address_counter.add(sender, quantity);
+    };
+
     let mut i = 0;
 
-    let sender = ctx.sender();
-    let (mut kiosk, kiosk_cap) = kiosk::new(ctx);
-
     while (i < quantity) {
-        mint_to_address(control, attributes_mapping, random, &mut kiosk, &kiosk_cap, sender, ctx);
+        mint_to_address(
+            control,
+            attributes_mapping,
+            random,
+            kiosk,
+            kiosk_cap,
+            transfer_policy,
+            sender,
+            ctx,
+        );
         i = i + 1;
     };
 
-    if (referral.is_some()) {
-        let referralAddress = referral.get_with_default(ctx.sender());
-        let referralValue = coin.value() * 7 / 100; // TODO: Change this
-        let referralCoin = coin::take(coin.balance_mut(), referralValue, ctx);
-        transfer::public_transfer(referralCoin, referralAddress);
-    };
-
-    // transfer::public_transfer(coin, ctx.sender());
     transfer::public_transfer(coin, control.admin.admin_address);
-
-    transfer::public_share_object(kiosk);
-    transfer::public_transfer(kiosk_cap, sender);
 }
 
 /*
@@ -249,29 +254,49 @@ entry fun mint_wl(
     control: &mut MintingControl,
     attributes_mapping: &AttributeMapping,
     random: &Random,
-    _wl: &mut WlNft,
+    _wl: &WlNft,
     coin: Coin<SUI>,
     quantity: u64,
+    kiosk: &mut Kiosk,
+    kiosk_cap: &KioskOwnerCap,
+    transfer_policy: &TransferPolicy<ManiacNft>,
     ctx: &mut TxContext,
 ) {
-    assert!(quantity > 0 && quantity <= 50, EInvalidQuantity);
+    assert!(control.minting_type == 0, EInvalidMintingType);
+
+    assert!(quantity > 0 && quantity <= MAX_MINT_WL, EInvalidQuantity);
 
     assert!(quantity + control.counter <= MAX_SUPPLY, EMintTooMany);
 
     assert!(coin.value() == quantity * control.price_wl, EInvalidPayment);
 
-    let mut i = 0;
     let sender = ctx.sender();
-    let (mut kiosk, kiosk_cap) = kiosk::new(ctx);
+    if (control.wl_address_counter.contains(sender)) {
+        let counter = *control.wl_address_counter.borrow(sender);
+        assert!(counter + quantity <= MAX_MINT_WL, EMintTooMany);
+        control.wl_address_counter.remove(sender);
+        control.wl_address_counter.add(sender, counter + quantity);
+    } else {
+        control.wl_address_counter.add(sender, quantity);
+    };
+
+    let mut i = 0;
 
     while (i < quantity) {
-        mint_to_address(control, attributes_mapping, random, &mut kiosk, &kiosk_cap, sender, ctx);
+        mint_to_address(
+            control,
+            attributes_mapping,
+            random,
+            kiosk,
+            kiosk_cap,
+            transfer_policy,
+            sender,
+            ctx,
+        );
         i = i + 1;
     };
 
     transfer::public_transfer(coin, control.admin.admin_address);
-    transfer::public_share_object(kiosk);
-    transfer::public_transfer(kiosk_cap, sender);
 }
 
 /*
@@ -319,17 +344,8 @@ public fun set_attribute(
             transfer::public_transfer(removedAttribute, sender);
         };
 
-        if (name == b"background") {
-            nft.attributes.background = string::utf8(*value);
-        } else if (name == b"body") {
-            nft.attributes.body = string::utf8(*value);
-        } else if (name == b"hat") {
-            nft.attributes.hat = string::utf8(*value);
-        } else if (name == b"beard") {
-            nft.attributes.beard = string::utf8(*value);
-        } else if (name == b"eyes") {
-            nft.attributes.eyes = string::utf8(*value);
-        };
+        nft.attributes.remove(&string::utf8(*name));
+        nft.attributes.insert(string::utf8(*name), string::utf8(*value));
 
         ofield::add(&mut nft.id, *name, attribute);
     };
@@ -338,11 +354,36 @@ public fun set_attribute(
     remove_attributes.destroy_empty();
 }
 
+entry fun set_name(
+    control: &mut MintingControl,
+    nft_id: ID,
+    kiosk: &mut Kiosk,
+    cap: &KioskOwnerCap,
+    new_name: vector<u8>,
+) {
+    let new_name_string = string::utf8(new_name);
+    assert!(control.used_names.contains(&new_name_string) == false, ENameAlreadyUsed);
+
+    let nft = kiosk::borrow_mut<ManiacNft>(kiosk, cap, nft_id);
+    let old_name = nft.name;
+    nft.name = new_name_string;
+
+    control.used_names.remove(&old_name);
+    control.used_names.insert(new_name_string, true);
+}
+
+// === View Functions ===
+
+// TODO: Add view functions
+
+// === Admin Functions ===
+
 entry fun giveaway(
     control: &mut MintingControl,
     attributes_mapping: &AttributeMapping,
     random: &Random,
     mut address_list: vector<address>,
+    transfer_policy: &TransferPolicy<ManiacNft>,
     ctx: &mut TxContext,
 ) {
     let caller = ctx.sender();
@@ -356,11 +397,130 @@ entry fun giveaway(
         let user = address_list.pop_back();
         let (mut kiosk, kiosk_cap) = kiosk::new(ctx);
 
-        mint_to_address(control, attributes_mapping, random, &mut kiosk, &kiosk_cap, user, ctx);
+        mint_to_address(
+            control,
+            attributes_mapping,
+            random,
+            &mut kiosk,
+            &kiosk_cap,
+            transfer_policy,
+            user,
+            ctx,
+        );
 
         transfer::public_share_object(kiosk);
         transfer::public_transfer(kiosk_cap, user);
     };
 
     address_list.destroy_empty();
+}
+
+entry fun giveaway_to_sender(
+    control: &mut MintingControl,
+    attributes_mapping: &AttributeMapping,
+    random: &Random,
+    kiosk: &mut Kiosk,
+    kiosk_cap: &KioskOwnerCap,
+    quantity: u64,
+    transfer_policy: &TransferPolicy<ManiacNft>,
+    ctx: &mut TxContext,
+) {
+    let caller = ctx.sender();
+    assert!(is_admin(control, caller), ENotAdmin);
+
+    assert!(quantity + control.counter <= MAX_SUPPLY, EMintTooMany);
+
+    let mut i = 0;
+
+    while (i < quantity) {
+        mint_to_address(
+            control,
+            attributes_mapping,
+            random,
+            kiosk,
+            kiosk_cap,
+            transfer_policy,
+            caller,
+            ctx,
+        );
+
+        i = i + 1;
+    };
+}
+
+// === Private Functions ===
+
+fun is_admin(control: &MintingControl, caller: address): bool {
+    control.admin.admin_address == caller
+}
+
+/*
+Mints an NFT to a specific address with 5 random attribute NFTs. The body and attributes are separate collections. Body NFT is locked inside a kiosk.
+*/
+fun mint_to_address(
+    control: &mut MintingControl,
+    attributes_mapping: &AttributeMapping,
+    random: &Random,
+    kiosk: &mut Kiosk,
+    kiosk_cap: &KioskOwnerCap,
+    transfer_policy: &TransferPolicy<ManiacNft>,
+    _sender: address,
+    ctx: &mut TxContext,
+) {
+    let mut full_name = vector::empty();
+    full_name.append(NFT_BASE_NAME);
+    full_name.append(*control.counter.to_string().as_bytes());
+
+    let nft_id = object::new(ctx);
+
+    let mut image_url = IMAGE_BASE_URL;
+    let objectIdString = nft_id.to_address().to_string().as_bytes();
+    image_url.append(*objectIdString);
+
+    control.counter = control.counter + 1;
+
+    let backgroundAttribute = create_random_attribute(
+        attributes_mapping,
+        b"background",
+        random,
+        ctx,
+    );
+    // transfer::public_transfer(backgroundAttribute, sender);
+    let beardAttribute = create_random_attribute(attributes_mapping, b"beard", random, ctx);
+    // transfer::public_transfer(beardAttribute, sender);
+    let bodyAttribute = create_random_attribute(attributes_mapping, b"body", random, ctx);
+    // transfer::public_transfer(bodyAttribute, sender);
+    let hatAttribute = create_random_attribute(attributes_mapping, b"hat", random, ctx);
+    // transfer::public_transfer(hatAttribute, sender);
+    let eyesAttribute = create_random_attribute(attributes_mapping, b"eyes", random, ctx);
+    // transfer::public_transfer(eyesAttribute, sender);
+
+    let mut attributes = vec_map::empty<String, String>();
+    attributes.insert(string::utf8(b"background"), *backgroundAttribute.field_value());
+    attributes.insert(string::utf8(b"body"), *bodyAttribute.field_value());
+    attributes.insert(string::utf8(b"hat"), *hatAttribute.field_value());
+    attributes.insert(string::utf8(b"beard"), *beardAttribute.field_value());
+    attributes.insert(string::utf8(b"eyes"), *eyesAttribute.field_value());
+
+    let nft = ManiacNft {
+        id: nft_id,
+        name: string::utf8(full_name),
+        image_url: string::utf8(image_url),
+        attributes,
+    };
+
+    let nft_inner_id = nft.id.to_inner();
+
+    kiosk::lock(kiosk, kiosk_cap, transfer_policy, nft);
+
+    // Equip attributes to Fever Maniac NFT
+    let mut attributes = vector::empty();
+    attributes.push_back(backgroundAttribute);
+    attributes.push_back(beardAttribute);
+    attributes.push_back(bodyAttribute);
+    attributes.push_back(hatAttribute);
+    attributes.push_back(eyesAttribute);
+    let removeAttributes = vector::empty<vector<u8>>();
+
+    set_attribute(nft_inner_id, kiosk, kiosk_cap, attributes, removeAttributes, ctx);
 }

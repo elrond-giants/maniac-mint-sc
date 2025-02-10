@@ -1,17 +1,31 @@
 module maniac_nfts::maniac_attribute;
 
-use std::string;
+use std::string::{Self, String};
 use sui::display;
 use sui::package;
 use sui::random::{Self, Random};
 use sui::table::{Self, Table};
-use sui::url::{Self, Url};
+use sui::vec_map::{Self, VecMap};
+
+// === Errors ===
+
+const EInvalidArrayLength: u64 = 0;
+const ENotAdmin: u64 = 1;
+
+// === Constants ===
 
 const IMAGE_BASE_URL: vector<u8> = b"https://metadata.coinfever.app/api/attribute/?id=";
 
-// Errors
-const EInvalidArrayLength: u64 = 0;
-const ENotAdmin: u64 = 1;
+// === Structs ===
+
+public struct ManiacAttributeNft has key, store {
+    id: UID,
+    name: String,
+    image_url: String,
+    field_type: String,
+    field_value: String,
+    attributes: VecMap<String, String>,
+}
 
 public struct Admin has store {
     admin_address: address,
@@ -20,28 +34,6 @@ public struct Admin has store {
 public struct MintingControl has key, store {
     id: UID,
     admin: Admin,
-}
-
-public struct MANIAC_ATTRIBUTE has drop {}
-
-public struct ManiacAttributeNft has key, store {
-    id: UID,
-    name: string::String,
-    image_url: Url,
-    field_type: string::String,
-    field_value: string::String,
-}
-
-public fun field_type(nft: &ManiacAttributeNft): &string::String {
-    &nft.field_type
-}
-
-public fun field_value(nft: &ManiacAttributeNft): &string::String {
-    &nft.field_value
-}
-
-fun is_admin(control: &MintingControl, caller: address): bool {
-    control.admin.admin_address == caller
 }
 
 public struct AttributeMappingItem has store {
@@ -57,6 +49,12 @@ public struct AttributeMapping has key, store {
     beard: AttributeMappingItem,
     eyes: AttributeMappingItem,
 }
+
+public struct MANIAC_ATTRIBUTE has drop {}
+
+// === Events ===
+
+// === Public Functions ===
 
 fun init(otw: MANIAC_ATTRIBUTE, ctx: &mut TxContext) {
     let keys = vector[
@@ -167,6 +165,16 @@ entry fun add_attribute(
     probability_arr.destroy_empty();
 }
 
+// === View Functions ===
+
+public fun field_type(nft: &ManiacAttributeNft): &String {
+    &nft.field_type
+}
+
+public fun field_value(nft: &ManiacAttributeNft): &String {
+    &nft.field_value
+}
+
 public fun get_attribute(
     mapping: &AttributeMapping,
     field_type: vector<u8>,
@@ -180,6 +188,69 @@ public fun get_attribute(
         b"eyes" => *table::borrow(&mapping.eyes.id_to_value, field_id),
         _ => b"None",
     }
+}
+
+// === Admin Functions ===
+
+entry fun giveaway(
+    control: &MintingControl,
+    field_type: vector<u8>,
+    field_value: vector<u8>,
+    mut address_list: vector<address>,
+    ctx: &mut TxContext,
+) {
+    let caller = ctx.sender();
+    assert!(is_admin(control, caller), ENotAdmin);
+
+    while (!address_list.is_empty()) {
+        let user = address_list.pop_back();
+        let nft = create_attribute(field_type, field_value, ctx);
+        transfer::public_transfer(nft, user);
+    };
+
+    address_list.destroy_empty();
+}
+
+entry fun giveaway_to_sender(
+    control: &MintingControl,
+    field_type: vector<u8>,
+    field_value: vector<u8>,
+    quantity: u64,
+    ctx: &mut TxContext,
+) {
+    let caller = ctx.sender();
+    assert!(is_admin(control, caller), ENotAdmin);
+
+    let mut i = 0;
+
+    while (i < quantity) {
+        let nft = create_attribute(field_type, field_value, ctx);
+        transfer::public_transfer(nft, caller);
+
+        i = i + 1;
+    };
+}
+
+// === Package Functions ===
+
+/*
+Create a random attribute NFT for the given field type. This function is used on the Fever Maniac mint to create random attributes for each field type.
+*/
+public(package) fun create_random_attribute(
+    mapping: &AttributeMapping,
+    field_type: vector<u8>,
+    random: &Random,
+    ctx: &mut TxContext,
+): ManiacAttributeNft {
+    let random_attribute = get_random_attribute(mapping, field_type, random, ctx);
+
+    create_attribute(field_type, random_attribute, ctx)
+}
+
+// === Private Functions ===
+
+fun is_admin(control: &MintingControl, caller: address): bool {
+    control.admin.admin_address == caller
 }
 
 /*
@@ -252,44 +323,16 @@ fun create_attribute(
     let objectIdString = nftId.to_address().to_string().as_bytes();
     imageUrl.append(*objectIdString);
 
+    let mut attributes = vec_map::empty<string::String, string::String>();
+    attributes.insert(string::utf8(b"Type"), string::utf8(field_type));
+    attributes.insert(string::utf8(b"Value"), string::utf8(field_value));
+
     ManiacAttributeNft {
         id: nftId,
         name: string::utf8(fullName),
-        image_url: url::new_unsafe_from_bytes(imageUrl),
+        image_url: string::utf8(imageUrl),
         field_type: string::utf8(field_type),
         field_value: string::utf8(field_value),
+        attributes,
     }
-}
-
-/*
-Create a random attribute NFT for the given field type. This function is used on the Fever Maniac mint to create random attributes for each field type.
-*/
-public(package) fun create_random_attribute(
-    mapping: &AttributeMapping,
-    field_type: vector<u8>,
-    random: &Random,
-    ctx: &mut TxContext,
-): ManiacAttributeNft {
-    let random_attribute = get_random_attribute(mapping, field_type, random, ctx);
-
-    create_attribute(field_type, random_attribute, ctx)
-}
-
-entry fun giveaway(
-    control: &MintingControl,
-    field_type: vector<u8>,
-    field_value: vector<u8>,
-    mut address_list: vector<address>,
-    ctx: &mut TxContext,
-) {
-    let caller = ctx.sender();
-    assert!(is_admin(control, caller), ENotAdmin);
-
-    while (!address_list.is_empty()) {
-        let user = address_list.pop_back();
-        let nft = create_attribute(field_type, field_value, ctx);
-        transfer::public_transfer(nft, user);
-    };
-
-    address_list.destroy_empty();
 }
