@@ -14,6 +14,7 @@ use std::string::{Self, String};
 use sui::coin::Coin;
 use sui::display;
 use sui::dynamic_object_field as ofield;
+use sui::event;
 use sui::kiosk::{Self, Kiosk, KioskOwnerCap};
 use sui::package;
 use sui::random::Random;
@@ -33,12 +34,11 @@ const ENameAlreadyUsed: u64 = 5;
 
 // === Constants ===
 
-// TODO: Change this before deploy to mainnet
 const MAX_SUPPLY: u64 = 4444;
 const IMAGE_BASE_URL: vector<u8> = b"https://metadata.coinfever.app/api/image/?id=";
 const NFT_BASE_NAME: vector<u8> = b"Fever Maniac #";
-const WL_PRICE: u64 = 1;
-const PUBLIC_PRICE: u64 = 1;
+const WL_PRICE: u64 = 12;
+const PUBLIC_PRICE: u64 = 15;
 const ONE_SUI: u64 = 1000000000;
 const ROYALTIES: u16 = 7_00; // 10%
 const MIN_ROYALTIES: u64 = ONE_SUI / 10; // 0.1 SUI
@@ -75,6 +75,17 @@ public struct MintingControl has key, store {
 public struct MANIAC_NFTS has drop {}
 
 // === Events ===
+
+public struct AttributeChanged has copy, drop {
+    nft_id: ID,
+    add_attributes: vector<ID>,
+    remove_attributes: vector<vector<u8>>,
+}
+
+public struct NameChanged has copy, drop {
+    nft_id: ID,
+    new_name: vector<u8>,
+}
 
 // === Public Functions ===
 
@@ -122,7 +133,7 @@ fun init(otw: MANIAC_NFTS, ctx: &mut TxContext) {
         id: object::new(ctx),
         admin: Admin { admin_address: sender },
         counter: 0,
-        paused: false, // TODO: Change this to true before deploy to mainnet
+        paused: true,
         price_wl: WL_PRICE * ONE_SUI,
         price_public: PUBLIC_PRICE * ONE_SUI,
         minting_type: 0,
@@ -328,11 +339,17 @@ public fun set_attribute(
                 name,
             );
             transfer::public_transfer(removedAttribute, sender);
+
+            nft.attributes.remove(&string::utf8(name));
+            nft.attributes.insert(string::utf8(name), string::utf8(b"None"));
         };
     };
 
+    let mut attribute_ids = vector::empty<ID>();
+
     while (!add_attributes.is_empty()) {
         let attribute = add_attributes.pop_back();
+        attribute_ids.push_back(object::id(&attribute));
         let name = field_type(&attribute).as_bytes();
         let value = field_value(&attribute).as_bytes();
 
@@ -349,6 +366,12 @@ public fun set_attribute(
 
         ofield::add(&mut nft.id, *name, attribute);
     };
+
+    event::emit(AttributeChanged {
+        nft_id,
+        add_attributes: attribute_ids,
+        remove_attributes,
+    });
 
     add_attributes.destroy_empty();
     remove_attributes.destroy_empty();
@@ -370,11 +393,26 @@ entry fun set_name(
 
     control.used_names.remove(&old_name);
     control.used_names.insert(new_name_string, true);
+
+    event::emit(NameChanged {
+        nft_id,
+        new_name,
+    });
 }
 
 // === View Functions ===
 
-// TODO: Add view functions
+public fun name(nft: &ManiacNft): &String {
+    &nft.name
+}
+
+public fun image_url(nft: &ManiacNft): &String {
+    &nft.image_url
+}
+
+public fun attributes(nft: &ManiacNft): &VecMap<String, String> {
+    &nft.attributes
+}
 
 // === Admin Functions ===
 

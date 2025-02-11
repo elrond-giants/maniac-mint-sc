@@ -119,6 +119,41 @@ fun init(otw: MANIAC_ATTRIBUTE, ctx: &mut TxContext) {
     transfer::share_object(attributeMapping);
 }
 
+// === View Functions ===
+
+public fun name(nft: &ManiacAttributeNft): &String {
+    &nft.name
+}
+
+public fun image_url(nft: &ManiacAttributeNft): &String {
+    &nft.image_url
+}
+
+public fun field_type(nft: &ManiacAttributeNft): &String {
+    &nft.field_type
+}
+
+public fun field_value(nft: &ManiacAttributeNft): &String {
+    &nft.field_value
+}
+
+public fun get_attribute(
+    mapping: &AttributeMapping,
+    field_type: vector<u8>,
+    field_id: u64,
+): vector<u8> {
+    match (field_type) {
+        b"background" => *table::borrow(&mapping.background.id_to_value, field_id),
+        b"body" => *table::borrow(&mapping.body.id_to_value, field_id),
+        b"hat" => *table::borrow(&mapping.hat.id_to_value, field_id),
+        b"beard" => *table::borrow(&mapping.beard.id_to_value, field_id),
+        b"eyes" => *table::borrow(&mapping.eyes.id_to_value, field_id),
+        _ => b"None",
+    }
+}
+
+// === Admin Functions ===
+
 /*
 Add attributes for the initial minting of the Fever Maniac NFTs. Each attribute has a field type, field value, and probability.
 */
@@ -164,33 +199,6 @@ entry fun add_attribute(
     field_value_arr.destroy_empty();
     probability_arr.destroy_empty();
 }
-
-// === View Functions ===
-
-public fun field_type(nft: &ManiacAttributeNft): &String {
-    &nft.field_type
-}
-
-public fun field_value(nft: &ManiacAttributeNft): &String {
-    &nft.field_value
-}
-
-public fun get_attribute(
-    mapping: &AttributeMapping,
-    field_type: vector<u8>,
-    field_id: u64,
-): vector<u8> {
-    match (field_type) {
-        b"background" => *table::borrow(&mapping.background.id_to_value, field_id),
-        b"body" => *table::borrow(&mapping.body.id_to_value, field_id),
-        b"hat" => *table::borrow(&mapping.hat.id_to_value, field_id),
-        b"beard" => *table::borrow(&mapping.beard.id_to_value, field_id),
-        b"eyes" => *table::borrow(&mapping.eyes.id_to_value, field_id),
-        _ => b"None",
-    }
-}
-
-// === Admin Functions ===
 
 entry fun giveaway(
     control: &MintingControl,
